@@ -22,7 +22,7 @@ anyone    ── release(case) after 7 days without an appeal ─▶ FINAL, rese
 ## Live deployment
 
 App: https://modcourt.cristhedev.com (communities, policy, moderator stats, cases and every role's actions; source in [`app/`](app/))  
-Testnet Bradbury (chainId 4221): _not deployed yet_
+Testnet Bradbury (chainId 4221): [`0x848C5b61D926247462B870a0e489E9F7204c2147`](https://explorer-bradbury.genlayer.com/address/0x848C5b61D926247462B870a0e489E9F7204c2147)
 
 ## Consensus design
 
