@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from tests.direct.conftest import BOND, CONTENT, POOL, REWARD, RULES, appeal, chain_balance, sha, to_hex
+from tests.direct.conftest import BOND, CONTENT, POOL, REWARD, RULES, appeal, chain_balance, sha, tick, to_hex
 
 
 def test_create(mc, direct_alice, direct_bob, direct_charlie):
@@ -126,26 +126,101 @@ def test_owner_withdraws_only_the_unreserved_pool(case, direct_vm, direct_alice,
     assert ledger.paid_to(direct_alice) == REWARD and case.get_community(0)["free"] == 0
 
 
-def test_failed_transfer_reconciled_and_recovered(case, direct_vm, direct_charlie, direct_bob, ledger):
-    appeal(direct_vm, case, direct_charlie)  # balance stays at POOL + BOND: the payout did not leave
-    direct_vm.sender = direct_bob
-    with direct_vm.expect_revert("still be settling"):
-        case.reconcile_payout(0)
-    direct_vm.warp("2030-01-02T10:00:01Z")
-    case.reconcile_payout(0)
-    assert case.get_recoverable(to_hex(direct_charlie)) == BOND + REWARD
-    direct_vm.sender = direct_charlie
-    case.recover(to_hex(direct_charlie))
-    assert ledger.paid_to(direct_charlie) == 2 * (BOND + REWARD)
-    with direct_vm.expect_revert("nothing to recover"):
-        case.recover(to_hex(direct_charlie))
+# ── Each payout settles from its own transfer ───────────────────────────────
+
+OTHER = "0x" + "77" * 20
 
 
-def test_delivered_transfer_cannot_be_reconciled(case, direct_vm, direct_charlie):
+def test_delivered_overturn_settles(case, direct_vm, direct_charlie, direct_bob, chain):
     appeal(direct_vm, case, direct_charlie)
-    chain_balance(direct_vm, POOL - REWARD)  # the payout left
-    direct_vm.warp("2030-01-03T10:00:00Z")
-    with direct_vm.expect_revert("transfer delivered"):
-        case.reconcile_payout(0)
-    with direct_vm.expect_revert("case not found"):
-        case.get_case(7)
+    tx, fin = chain.pay(case, 0, "appeal", [0, CONTENT, "s"])
+    direct_vm.sender = direct_bob
+    assert case.settle_payout(0, tx, fin) == "DELIVERED"
+    assert case.get_payout(0)["tx"] == tx and case.get_payout(0)["ref"] == 0
+    assert case.get_recoverable(to_hex(direct_charlie)) == 0
+    assert direct_vm.run_validator(leader_result="failed") is False
+    with direct_vm.expect_revert("already settled"):
+        case.settle_payout(0, tx, fin)
+
+
+def test_failed_overturn_is_recoverable_and_recovery_settles_too(case, direct_vm, direct_charlie, chain, ledger):
+    appeal(direct_vm, case, direct_charlie)
+    tx, fin = chain.pay(case, 0, "appeal", [0, CONTENT, "s"], delivered=False)
+    assert case.settle_payout(0, tx, fin) == "FAILED"
+    assert case.get_recoverable(to_hex(direct_charlie)) == BOND + REWARD
+    assert case.get_accounting()["expected_balance"] == POOL + BOND
+    tick(direct_vm)
+    direct_vm.sender = direct_charlie
+    assert case.recover(OTHER) == BOND + REWARD
+    assert ledger.paid_to(OTHER) == BOND + REWARD
+    with direct_vm.expect_revert("nothing to recover"):
+        case.recover(OTHER)
+    tx2, fin2 = chain.pay(case, 1, "recover", [OTHER], delivered=False)
+    assert case.settle_payout(1, tx2, fin2) == "FAILED"
+    assert case.get_recoverable(to_hex(direct_charlie)) == BOND + REWARD
+
+
+def test_failed_withdraw_goes_back_to_the_owner(case, direct_vm, direct_alice, chain):
+    direct_vm.sender = direct_alice
+    case.withdraw_pool(0, REWARD)
+    tx, fin = chain.pay(case, 0, "withdraw_pool", [0, REWARD], delivered=False)
+    assert case.settle_payout(0, tx, fin) == "FAILED"
+    assert case.get_recoverable(to_hex(direct_alice)) == REWARD
+
+
+def test_withdraw_amount_is_bound_to_the_transaction(case, direct_vm, direct_alice, chain):
+    direct_vm.sender = direct_alice
+    case.withdraw_pool(0, REWARD)
+    tx, fin = chain.pay(case, 0, "withdraw_pool", [0, REWARD - 1], delivered=False)
+    with direct_vm.expect_revert("did not create this payout"):
+        case.settle_payout(0, tx, fin)
+
+
+@pytest.mark.parametrize(
+    "kw,err",
+    [
+        ({"method": "release", "args": [0]}, "did not create this payout"),
+        ({"args": [1, CONTENT, "s"]}, "did not create this payout"),
+        ({"sender": "0x" + "99" * 20}, "did not create this payout"),
+        ({"at": 1}, "did not create this payout"),
+        ({"result": 2}, "did not create this payout"),
+        ({"status": 5}, "not finalized yet"),
+        # same sender, second, method and id, but it sent nothing (a call that did not pay)
+        ({"delivered": None}, "did not create this payout"),
+    ],
+)
+def test_settle_rejects_a_transaction_that_is_not_this_payout(kw, err, case, direct_vm, direct_charlie, chain):
+    appeal(direct_vm, case, direct_charlie)
+    method, args = kw.pop("method", "appeal"), kw.pop("args", [0, CONTENT, "s"])
+    tx, fin = chain.pay(case, 0, method, args, **{"delivered": False, **kw})
+    with direct_vm.expect_revert(err):
+        case.settle_payout(0, tx, fin)
+    assert case.get_payout(0)["status"] == "SENT"
+
+
+def test_settle_needs_the_finalization_of_that_transaction(case, direct_vm, direct_charlie, chain):
+    appeal(direct_vm, case, direct_charlie)
+    tx, _ = chain.pay(case, 0, "appeal", [0, CONTENT, "s"], delivered=False)
+    _, other_fin = chain.pay(case, 0, "appeal", [0, CONTENT, "s"])
+    with direct_vm.expect_revert("not the finalization"):
+        case.settle_payout(0, tx, other_fin)
+    with direct_vm.expect_revert("not found"):
+        case.settle_payout(0, tx, "0x" + "ab" * 32)
+    with direct_vm.expect_revert("0x + 64 hex"):
+        case.settle_payout(0, tx, "latest")
+    chain.down = True
+    with direct_vm.expect_revert("RPC unavailable"):
+        case.settle_payout(0, tx, other_fin)
+
+
+def test_one_paying_transaction_settles_one_payout_and_one_payment_per_second(case, direct_vm, direct_alice, chain):
+    direct_vm.sender = direct_alice
+    case.withdraw_pool(0, 1)
+    with direct_vm.expect_revert("one payment per sender per second"):
+        case.withdraw_pool(0, 1)
+    tick(direct_vm)
+    case.withdraw_pool(0, 1)
+    tx, fin = chain.pay(case, 0, "withdraw_pool", [0, 1])
+    assert case.settle_payout(0, tx, fin) == "DELIVERED"
+    with direct_vm.expect_revert("already settled a payout"):
+        case.settle_payout(1, tx, fin)
