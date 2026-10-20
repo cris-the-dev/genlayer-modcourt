@@ -1,37 +1,51 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ModCourt</title><meta name="description" content="Moderation appeals judged against the written policy"><meta name="theme-color" content="#FAFAF7">
-<link rel="stylesheet" href="app.css">
+<title>ModCourt</title><meta name="description" content="Moderation appeals judged against the written policy"><meta name="theme-color" content="#EEE7D7">
+<link rel="stylesheet" href="app.css"><link rel="icon" href="logo.svg" type="image/svg+xml">
 </head><body>
-<div class="bar"><div class="w"><span class="who">cristhedev <span style="color:var(--line)">/</span> genlayer builds</span><nav id="sites"></nav></div></div>
-<div class="head"><div class="w"><div><h1>ModCourt</h1><p>Moderation appeals judged against the written policy</p></div><button id="connect" class="ghost" type="button">Connect wallet</button></div></div>
-<div class="meta"><div class="w"><span>contract <a href="https://explorer-bradbury.genlayer.com/address/0x1016152661738C1dB57517a82532E263Ef695264">0x1016…5264 ↗</a></span><span>network <b>testnet bradbury</b></span><span><a href="https://github.com/cris-the-dev/genlayer-modcourt">source ↗</a></span><span><a href="docs.html">docs →</a></span></div></div>
+<div class="bar"><div class="w"><span class="who">cristhedev / genlayer builds</span><nav id="sites"></nav></div></div>
+<header class="mast"><div class="w">
+  <div class="top"><span class="live">In session · Testnet Bradbury</span>
+    <div class="links">
+      <a href="https://explorer-bradbury.genlayer.com/address/0x1016152661738C1dB57517a82532E263Ef695264">Contract 0x1016…5264 ↗</a>
+      <a href="https://github.com/cris-the-dev/genlayer-modcourt">Source ↗</a>
+      <a href="docs.html">Docs</a>
+      <button id="connect" type="button">Connect wallet</button>
+    </div></div>
+  <div class="title">
+    <svg viewBox="0 0 64 64" aria-hidden="true"><use href="logo.svg#m"/></svg>
+    <h1>Mod<em>Court</em></h1>
+    <p>Moderation appeals, judged against the community's written policy by GenLayer validators.</p>
+  </div>
+</div></header>
+<div class="w"><div class="stats" id="stats">
+    <div class="stat"><b>–</b><span>Communities</span></div><div class="stat"><b>–</b><span>Cases</span></div>
+    <div class="stat"><b>–</b><span>Overturned</span></div><div class="stat"><b>–</b><span>Free pool (GEN)</span></div>
+  </div></div>
 <main class="w">
   <p id="status" class="status" hidden></p>
   <div class="grid">
     <div>
       <section>
-        <h2>Communities</h2>
-        <div class="tbl"><table>
-          <thead><tr><th>#</th><th>Community</th><th class="r">Appeal bond</th><th class="r">Overturn reward</th><th class="r">Free pool</th><th class="r">Cases</th></tr></thead>
-          <tbody id="communities"><tr><td colspan="6" class="empty">Reading the contract…</td></tr></tbody>
-        </table></div>
+        <p class="label">The docket · pick a community</p>
+        <div class="list" id="communities"><p class="empty">Reading the contract…</p></div>
       </section>
       <section id="detail" hidden></section>
     </div>
 
     <aside>
       <section>
-        <h2>How an appeal is decided</h2>
-        <dl class="kv">
-          <div><dt>Record</dt><dd>moderator, rule, action and the SHA-256 of the content</dd></div>
-          <div><dt>Appeal</dt><dd>the affected user, within 7 days, pays the bond and submits the content (hash must match)</dd></div>
-          <div><dt>Validators judge</dt><dd>which rules of the written policy the content violates</dd></div>
-          <div><dt>Validators agree if</dt><dd>all find a violation, or all find none</dd></div>
-          <div><dt>None violated</dt><dd>overturned: bond back plus the reward</dd></div>
-          <div><dt>Any rule</dt><dd>upheld: the bond goes to the community pool</dd></div>
-          <div><dt>Pool</dt><dd>every action reserves one reward; no reward, no moderation</dd></div>
-        </dl>
+        <p class="label">Procedure</p>
+        <ol class="how">
+          <li><span>I</span><div><b>Policy</b><p>The community writes numbered rules, sets an appeal bond and an overturn reward, and funds the pool.</p></div></li>
+          <li><span>II</span><div><b>Action</b><p>A moderator records member, rule, action and the content's SHA-256. One reward is reserved from the pool.</p></div></li>
+          <li><span>III</span><div><b>Appeal</b><p>Within 7 days the member pays the bond and submits the exact content (hash must match) and their side.</p></div></li>
+          <li><span>IV</span><div><b>Validators judge</b><p>Each lists the rules the content violates; they must agree whether that list is empty.</p></div></li>
+        </ol>
+        <div class="outcomes">
+          <div class="ok"><b>Overturned</b>no rule violated: bond back plus the reward</div>
+          <div class="bad"><b>Upheld</b>a rule violated: the bond goes to the pool</div>
+        </div>
       </section>
       <section>
         <details>
@@ -52,12 +66,6 @@
   </div>
 </main>
 
-<div class="steps"><ol>
-  <li><small>01</small><b>Policy</b><p>The community writes numbered rules, sets an appeal bond and an overturn reward, and funds the pool that pays for its mistakes.</p></li>
-  <li><small>02</small><b>Action</b><p>A moderator records who, which rule, what action and the content hash. One reward is reserved for as long as the action can be appealed.</p></li>
-  <li><small>03</small><b>Appeal</b><p>The user submits the content and their side. Validators read it against the policy; if nothing is violated, the user is paid for the moderator's mistake.</p></li>
-</ol></div>
-
 <script type="module">
 import { contract, wireWallet, send, status, gen, toWei, esc, short, $, EXPLORER } from "./gl.js";
 const mc = contract("0x1016152661738C1dB57517a82532E263Ef695264");
@@ -72,19 +80,23 @@ async function load(openId) {
   try {
     const n = await mc.read("get_community_count");
     items = await Promise.all([...Array(n).keys()].reverse().map((i) => mc.read("get_community", [i])));
-    $("#communities").innerHTML = items.length ? items.map((c) => `<tr style="cursor:pointer" data-id="${c.id}">
-      <td class="num mut">${c.id}</td><td><a href="#community-${c.id}">${esc(c.name)}</a></td>
-      <td class="r num">${gen(c.appeal_bond, 6)} GEN</td><td class="r num">${gen(c.reward, 6)} GEN</td><td class="r num">${gen(c.free, 6)} GEN</td><td class="r num">${c.case_count}</td></tr>`).join("")
-      : `<tr><td colspan="6" class="empty">No communities yet.</td></tr>`;
+    const all = (await Promise.all(items.map((c) => mc.read("get_cases", [c.id])))).flat();
+    const sum = (k) => items.reduce((t, c) => t + Number(c[k]), 0);
+    $("#stats").innerHTML = [[items.length, "Communities"], [all.length, "Cases"], [all.filter((k) => k.status === "OVERTURNED").length, "Overturned"], [gen(sum("free"), 6), "Free pool (GEN)"]]
+      .map(([v, l]) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
+    $("#communities").innerHTML = items.length ? items.map((c) => `<a class="item" href="#community-${c.id}" data-id="${c.id}">
+      <div><b>${esc(c.name)}</b><small>community #${c.id} · ${c.rules.length} rules</small></div>
+      <div class="nums"><div><b>${gen(c.appeal_bond, 6)}</b>bond</div><div><b>${gen(c.reward, 6)}</b>reward</div><div><b>${gen(c.free, 6)}</b>free pool</div><div><b>${c.case_count}</b>cases</div></div></a>`).join("")
+      : `<p class="empty">No communities yet.</p>`;
     const h = location.hash.match(/^#community-(\d+)$/), id = openId ?? (h ? Number(h[1]) : null);
     if (items.length) show(Number.isInteger(id) && items.some((c) => c.id === id) ? id : items[0].id);
   } catch (e) {
-    $("#communities").innerHTML = `<tr><td colspan="6" class="empty">Could not read the contract: ${esc(e.message)}</td></tr>`;
+    $("#communities").innerHTML = `<p class="empty">Could not read the contract: ${esc(e.message)}</p>`;
   }
 }
 
 function actions(c, cases, isMod, recov) {
-  if (!me) return `<p class="hint" style="margin-top:16px">Connect a wallet to moderate, appeal or manage the pool.</p>`;
+  if (!me) return `<p class="connect-hint">Connect a wallet to moderate, appeal or manage the pool.</p>`;
   const now = Date.now() / 1000, out = [], mine = (a) => a.toLowerCase() === me.toLowerCase();
   for (const k of cases) {
     if (k.status !== "ACTIVE") continue;
@@ -124,29 +136,31 @@ async function show(id) {
     .filter((p) => p.status === "SENT" && [p.to, p.sender].some((a) => a.toLowerCase() === me.toLowerCase()));
   const el = $("#detail");
   el.hidden = false;
-  el.innerHTML = `<h2>${esc(c.name)} · community #${c.id}</h2>
-    <ol style="margin:8px 0 16px 20px">${c.rules.map((r) => `<li>${esc(r)}</li>`).join("")}</ol>
-    <dl class="kv">
-      <div><dt>Owner</dt><dd>${addr(c.owner)}</dd></div>
-      <div><dt>Pool</dt><dd>${gen(c.pool, 6)} GEN, ${gen(c.reserved, 6)} GEN reserved for open cases</dd></div>
-      <div><dt>Appeal bond / reward</dt><dd>${gen(c.appeal_bond, 6)} GEN / ${gen(c.reward, 6)} GEN</dd></div>
-      ${me ? `<div><dt>You</dt><dd>${isMod ? "moderator" : "member"}</dd></div>` : ""}
-    </dl>
-    ${mods.length ? `<h2 style="margin-top:24px">Moderators</h2><div class="tbl"><table><thead><tr><th>Moderator</th><th class="r">Actions</th><th class="r">Appealed</th><th class="r">Overturned</th></tr></thead><tbody>
+  el.innerHTML = `<div class="dhead"><div><small>Case file · community #${c.id}</small><h2>${esc(c.name)}</h2><p>owner ${addr(c.owner)}${me ? ` · you are ${isMod ? "a moderator" : "a member"}` : ""}</p></div></div>
+    <ol class="rules">${c.rules.map((r, i) => `<li><span>${i + 1}</span>${esc(r)}</li>`).join("")}</ol>
+    <div class="mini">
+      <div><span>Pool</span><b>${gen(c.pool, 6)} GEN</b></div>
+      <div><span>Reserved for open cases</span><b>${gen(c.reserved, 6)} GEN</b></div>
+      <div><span>Appeal bond</span><b>${gen(c.appeal_bond, 6)} GEN</b></div>
+      <div><span>Overturn reward</span><b>${gen(c.reward, 6)} GEN</b></div>
+    </div>
+    ${mods.length ? `<h3>Moderators</h3><div class="tbl"><table><thead><tr><th>Moderator</th><th class="r">Actions</th><th class="r">Appealed</th><th class="r">Overturned</th></tr></thead><tbody>
       ${mods.map((m, i) => `<tr><td>${addr(m)}</td><td class="r num">${stats[i].actions}</td><td class="r num">${stats[i].appeals}</td><td class="r num">${stats[i].overturned}</td></tr>`).join("")}</tbody></table></div>` : ""}
-    <h2 style="margin-top:24px">Cases</h2>
-    ${cases.length ? `<div class="tbl"><table><thead><tr><th>#</th><th>Member</th><th>Action</th><th>Status</th><th>Ruling</th></tr></thead><tbody>
-      ${cases.map((k) => `<tr><td class="num mut">${k.id}</td><td>${addr(k.target)}</td><td>${esc(k.action)}, rule ${k.rule} <span class="mut">by ${short(k.moderator)}</span></td>
-        <td><span class="tag ${cls[k.status] || ""}">${esc(k.status.toLowerCase())}</span>${k.status === "ACTIVE" ? ` <span class="mut">appeal by ${when(k.appeal_until)}</span>` : ""}</td>
-        <td>${k.decided_at ? `${k.violated.length ? `rules ${k.violated.join(", ")}` : "no rule violated"} <span class="mut">${esc(k.reason)}</span>` : "–"}</td></tr>
-        ${k.content ? `<tr><td></td><td colspan="4" class="mut">“${esc(k.content)}”${k.statement ? ` · appeal: ${esc(k.statement)}` : ""}</td></tr>` : ""}`).join("")}
-    </tbody></table></div>` : `<p class="hint">No cases yet.</p>`}
-    ${sent.length ? `<h2 style="margin-top:24px">Your transfers</h2><div class="tbl"><table><tbody>${sent.map((p) => `<tr><td class="num mut">#${p.id}</td><td>${esc(p.kind)}, ${gen(p.amount, 6)} GEN to ${addr(p.to)}</td><td><button class="ghost" data-act="settle_payout" data-arg="${p.id}" title="Settle from this transfer's result once the paying transaction is finalized">Settle</button></td></tr>`).join("")}</tbody></table></div>` : ""}
+    <h3>Cases</h3>
+    ${cases.length ? cases.map((k) => `<div class="case">
+      <div class="case-top"><span class="id">${k.id}</span><span class="tag ${cls[k.status] || "on"}">${k.status === "ACTIVE" ? "pending" : esc(k.status.toLowerCase())}</span>
+        <span class="what">${esc(k.action)} · rule ${k.rule}</span><span class="by">member ${addr(k.target)} · by ${short(k.moderator)}</span>
+        ${k.status === "ACTIVE" ? `<span class="by">appeal by ${when(k.appeal_until)}</span>` : ""}</div>
+      ${k.content ? `<div class="quote">“${esc(k.content)}”${k.statement ? `<small>Member: ${esc(k.statement)}</small>` : ""}</div>` : ""}
+      ${k.decided_at ? `<div class="ruling ${cls[k.status] || ""}"><b>${k.violated.length ? `violates rule ${k.violated.join(", ")}` : "no rule violated"}</b>${esc(k.reason)}</div>` : ""}
+    </div>`).join("") : `<p class="hint">No cases yet.</p>`}
+    ${sent.length ? `<h3>Your transfers</h3><div class="tbl"><table><tbody>${sent.map((p) => `<tr><td class="num mut">#${p.id}</td><td>${esc(p.kind)}, ${gen(p.amount, 6)} GEN to ${addr(p.to)}</td><td class="r"><button class="ghost" data-act="settle_payout" data-arg="${p.id}" title="Settle from this transfer's result once the paying transaction is finalized">Settle</button></td></tr>`).join("")}</tbody></table></div>` : ""}
     ${actions(c, cases, isMod, recov)}`;
   el.dataset.id = c.id;
+  document.querySelectorAll("#communities .item").forEach((x) => x.toggleAttribute("aria-current", Number(x.dataset.id) === c.id));
 }
 
-$("#communities").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-id]"); if (tr) { e.preventDefault(); history.replaceState(null, "", `#community-${tr.dataset.id}`); show(Number(tr.dataset.id)); $("#detail").scrollIntoView({ behavior: "smooth" }); } });
+$("#communities").addEventListener("click", (e) => { const tr = e.target.closest(".item[data-id]"); if (tr) { e.preventDefault(); history.replaceState(null, "", `#community-${tr.dataset.id}`); show(Number(tr.dataset.id)); $("#detail").scrollIntoView({ behavior: "smooth" }); } });
 $("#detail").addEventListener("click", async (e) => {
   const fn = e.target.dataset?.act, arg = Number(e.target.dataset?.arg);
   if (fn === "settle_payout") {
