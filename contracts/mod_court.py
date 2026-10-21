@@ -2,22 +2,40 @@
 """
 ModCourt — moderation appeals judged against the community's written policy.
 
-A community publishes a numbered policy, an appeal bond and an overturn
-reward, and funds the reward pool. Its moderators record each action on
-chain: who, which rule, what action, and the SHA-256 of the content. Every
-action reserves one reward from the pool, so a community cannot moderate more
+A community publishes a numbered policy (each rule may cap the strongest
+action it allows), an appeal bond and an overturn reward, and funds the reward
+pool. Every action reserves one reward, so a community cannot moderate more
 than it can pay for being wrong.
 
-Within 7 days the affected user can appeal: they pay the bond and submit the
-content (its hash must match the moderator's record) with their side of the
-story. Validators read the policy and the content and list the rules it
-violates; they must agree on whether that list is empty.
+Provenance. A member's client personal_signs a commitment to each post: this
+contract, the community and the SHA-256 of the post. A moderator records an
+action together with that signature; the contract recovers the signer and
+requires it to be the affected member, so a moderator cannot pin a fabricated
+or wrong hash on anyone.
 
-    no rule violated -> OVERTURNED: the user gets the bond back plus the reward
-    any rule         -> UPHELD:     the bond goes to the community's pool
+Appeals take two steps, so a timely appeal is never lost to a failed ruling:
+  1. appeal(case)  within 7 days: the member pays the exact bond. The case is
+     APPEALED and can no longer be released as final.
+  2. decide(case, url, statement)  the member points to a copy of the post;
+     validators fetch it, check its hash against the signed one, and rule. A
+     fetch error, malformed LLM output or a disagreement changes nothing, so
+     it can be retried until the 3-day resolution deadline.
+  Past the deadline, expire_unresolved(case) (anyone) refunds the bond and
+  the action stands, unreviewed (UNRESOLVED).
 
-An action nobody appealed in time is final and its reservation is released.
-Per-moderator stats (actions, appeals, overturned) are public.
+Validators must agree on one narrow question: does the content violate the
+rule the moderator cited? Not any rule, and not proportionality: the per-rule
+action cap is enforced deterministically when the action is recorded. The
+one-sentence explanation is the leader's alone and is labelled as such.
+
+    cited rule not violated -> OVERTURNED: bond back plus the reward
+    cited rule violated     -> UPHELD: the bond goes to the community's bond
+                               fund, which only pays later overturn rewards
+                               and can never be withdrawn by the owner
+
+Neither the post nor the statement is stored in contract state (the
+statement is still public calldata). A moderator with at least 3 overturned
+actions, more than half of their appealed ones, can no longer act.
 """
 
 import hashlib
@@ -27,6 +45,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from genlayer import *
+from genlayer.py.keccak import Keccak256
 
 ERR_EXPECTED = "[EXPECTED]"
 ERR_EXTERNAL = "[EXTERNAL]"
@@ -35,10 +54,14 @@ ERR_LLM = "[LLM_ERROR]"
 
 DAY = 86_400
 APPEAL_WINDOW = 7 * DAY
+RESOLVE_WINDOW = 3 * DAY  # from the appeal to the last moment it can be decided
 MAX_RULES = 20
 MAX_CONTENT = 4_000
+MAX_STATEMENT = 1_000
 MAX_REASON = 300
-ACTIONS = ("remove", "hide", "mute", "ban")
+PAGE = 50
+SUSPEND_AFTER = 3  # overturned actions that, as most of the appealed ones, end a moderator's role
+ACTIONS = ("hide", "remove", "mute", "ban")  # mildest first
 # Transfer results on Testnet Bradbury: see MandateGuard. When a paying
 # transaction finalizes, the consensus contract executes its value transfer
 # through this contract's ghost account, in the EVM transaction that emits
@@ -57,17 +80,28 @@ GEN_FINALIZED = 7
 GEN_RETURNED = 1  # txExecutionResult: FINISHED_WITH_RETURN
 # Each payout kind is created by exactly one method, which sends one transfer.
 # The payout's ref is that method's first argument (case or community id).
-PAYING = {"overturn": "appeal", "withdraw": "withdraw_pool", "recover": "recover"}
+PAYING = {"overturn": "decide", "refund": "expire_unresolved", "withdraw": "withdraw_pool", "recover": "recover"}
 TX_RE = re.compile(r"^0x[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+URL_RE = re.compile(r"^https?://[^\s]{3,300}$")
 
 ACTIVE = "ACTIVE"  # within the appeal window, not appealed
+APPEALED = "APPEALED"  # bond paid, waiting for a ruling
 FINAL = "FINAL"  # not appealed in time
 UPHELD = "UPHELD"
 OVERTURNED = "OVERTURNED"
+UNRESOLVED = "UNRESOLVED"  # no ruling by the deadline: bond refunded, action stands
 SENT = "SENT"
 DELIVERED = "DELIVERED"
 FAILED = "FAILED"
+
+# secp256k1, for recovering the signer of a member's commitment.
+_P = 2**256 - 2**32 - 977
+_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+_G = (
+    0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+    0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8,
+)
 
 
 @allow_storage
@@ -76,10 +110,11 @@ class Community:
     id: u256
     owner: Address
     name: str
-    rules: str  # JSON list of strings, rule n is rules[n - 1]
+    rules: str  # JSON list of {"text", "max"}: rule n is rules[n - 1], max its strongest action
     appeal_bond: u256
     reward: u256
-    pool: u256
+    pool: u256  # funded by the owner; the part not needed for reservations is withdrawable
+    bond_fund: u256  # upheld bonds; pays overturn rewards only, never withdrawable
     reserved: u256
     cases: u256
 
@@ -91,15 +126,14 @@ class Case:
     community_id: u256
     moderator: Address
     target: Address
-    content_sha256: str
+    content_sha256: str  # signed by the target
+    signature: str
     rule: u256
     action: str
     at: u256
     status: str
-    content: str
-    statement: str
-    violated: str  # JSON list of rule numbers from the validators
-    reason: str
+    appealed_at: u256
+    explanation: str  # the leader's sentence; not part of consensus
     decided_at: u256
 
 
@@ -108,8 +142,8 @@ class Case:
 class Payout:
     to: Address
     amount: u256
-    kind: str  # "overturn", "withdraw", "recover"
-    ref: u256  # case id (overturn), community id (withdraw), 0 (recover)
+    kind: str  # "overturn", "refund", "withdraw", "recover"
+    ref: u256  # case id (overturn, refund), community id (withdraw), 0 (recover)
     status: str  # SENT, DELIVERED or FAILED
     sender: Address  # who sent the paying transaction
     at: u256  # its creation time: (sender, at) identifies the paying transaction
@@ -142,9 +176,108 @@ def _add(a, b) -> u256:
     return u256(int(a) + int(b))
 
 
+def _keccak(b: bytes) -> bytes:
+    h = Keccak256()
+    h.update(b)
+    return h.digest()
+
+
+def _jdouble(a):
+    x, y, z = a
+    if not y:
+        return (0, 0, 0)
+    s = 4 * x * y * y % _P
+    m = 3 * x * x % _P
+    nx = (m * m - 2 * s) % _P
+    return nx, (m * (s - nx) - 8 * pow(y, 4, _P)) % _P, 2 * y * z % _P
+
+
+def _jadd(a, b):
+    """Jacobian points; (0, 0, 0) is infinity."""
+    if not a[2]:
+        return b
+    if not b[2]:
+        return a
+    z1, z2 = a[2] * a[2] % _P, b[2] * b[2] % _P
+    u1, u2 = a[0] * z2 % _P, b[0] * z1 % _P
+    s1, s2 = a[1] * z2 * b[2] % _P, b[1] * z1 * a[2] % _P
+    if u1 == u2:
+        return _jdouble(a) if s1 == s2 else (0, 0, 0)
+    h, r = u2 - u1, s2 - s1
+    h2 = h * h % _P
+    h3 = h * h2 % _P
+    x = (r * r - h3 - 2 * u1 * h2) % _P
+    return x, (r * (u1 * h2 - x) - s1 * h3) % _P, h * a[2] * b[2] % _P
+
+
+def _ec_mul2(k1: int, p1, k2: int, p2):
+    """k1*p1 + k2*p2 for affine points, in affine (None for infinity)."""
+    j1, j2 = (p1[0], p1[1], 1), (p2[0], p2[1], 1)
+    both, out = _jadd(j1, j2), (0, 0, 0)
+    for i in range(max(k1.bit_length(), k2.bit_length()) - 1, -1, -1):
+        out = _jdouble(out)
+        bit = (k1 >> i & 1, k2 >> i & 1)
+        if bit != (0, 0):
+            out = _jadd(out, both if bit == (1, 1) else j1 if bit[0] else j2)
+    if not out[2]:
+        return None
+    zi = pow(out[2], -1, _P)
+    return out[0] * zi * zi % _P, out[1] * zi * zi * zi % _P
+
+
+def recover_signer(message: str, signature: str) -> str:
+    """Lower-case address that personal_signed (EIP-191) `message`, or "" if the
+    signature is malformed."""
+    try:
+        sig = bytes.fromhex(signature.strip().removeprefix("0x"))
+    except ValueError:
+        return ""
+    if len(sig) != 65:
+        return ""
+    r, s, v = int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:64], "big"), sig[64]
+    v = v - 27 if v >= 27 else v
+    if not (0 < r < _P and 0 < s < _N) or r >= _N or v not in (0, 1):
+        return ""
+    m = message.encode("utf-8")
+    z = int.from_bytes(_keccak(b"\x19Ethereum Signed Message:\n" + str(len(m)).encode() + m), "big")
+    y2 = (pow(r, 3, _P) + 7) % _P
+    y = pow(y2, (_P + 1) // 4, _P)
+    if y * y % _P != y2:
+        return ""
+    if y & 1 != v:
+        y = _P - y
+    ri = pow(r, -1, _N)
+    q = _ec_mul2(s * ri % _N, (r, y), -z * ri % _N, _G)
+    if q is None:
+        return ""
+    return "0x" + _keccak(q[0].to_bytes(32, "big") + q[1].to_bytes(32, "big"))[-20:].hex()
+
+
+def commitment(contract: str, community_id: int, sha: str) -> str:
+    """The text a member signs for a post. Clients must produce it byte for byte."""
+    return f"ModCourt content commitment\ncontract: {contract.lower()}\ncommunity: {community_id}\nsha256: {sha}"
+
+
+def _fetch(p: dict) -> str:
+    """The moderated post from the member's URL, checked against the signed hash."""
+    try:
+        resp = gl.nondet.web.get(p["url"])
+    except Exception:
+        raise gl.vm.UserError(f"{ERR_EXTERNAL} content unreachable")
+    if resp.status >= 400 or resp.body is None:
+        raise gl.vm.UserError(f"{ERR_EXTERNAL} content URL returned HTTP {resp.status}")
+    if hashlib.sha256(resp.body).hexdigest() != p["sha"]:
+        raise gl.vm.UserError(f"{ERR_EXPECTED} content at that URL does not match the signed hash")
+    text = resp.body.decode("utf-8", errors="replace")
+    if len(text) > MAX_CONTENT:
+        raise gl.vm.UserError(f"{ERR_EXPECTED} content longer than {MAX_CONTENT} characters")
+    return text
+
+
 def _judge(p: dict) -> dict:
-    """Leader-side ruling. `p`: rules, rule, action, content, statement."""
-    rules = "\n".join(f"{i + 1}. {_fence(r)}" for i, r in enumerate(p["rules"]))
+    """Ruling on the cited rule. `p`: url, sha, rules, rule, action, statement."""
+    content = _fetch(p)
+    rules = "\n".join(f"{i + 1}. {_fence(r['text'])}" for i, r in enumerate(p["rules"]))
     prompt = f"""You are an independent appeals panel for an online community's moderation decision.
 
 SECURITY RULES (highest priority):
@@ -156,11 +289,11 @@ THE COMMUNITY POLICY (numbered rules):
 {rules}
 >>>
 
-The moderator applied action "{p["action"]}" citing rule {p["rule"]}.
+The moderator applied action "{p["action"]}" citing rule {p["rule"]} only.
 
 THE CONTENT THAT WAS MODERATED:
 <<<
-{_fence(p["content"])}
+{_fence(content)}
 >>>
 
 THE USER'S APPEAL STATEMENT:
@@ -168,37 +301,20 @@ THE USER'S APPEAL STATEMENT:
 {_fence(p["statement"])}
 >>>
 
-Decide which rules of THE POLICY the content violates, read as a reasonable moderator would.
-- Judge the content against the rules as written, not against rules you think the community should have.
+Decide one question: does the content violate rule {p["rule"]}, read as a reasonable moderator would?
+- Only rule {p["rule"]} counts. If the content breaks a different rule but not rule {p["rule"]}, answer false.
+- Do not judge whether the action was too harsh; only whether rule {p["rule"]} was violated.
+- Judge the content against the rule as written, not against rules you think the community should have.
 - The user's statement can give context (quoting, satire, a reply) but cannot change what the content says.
-- If no rule is violated, return an empty list.
+- In the reason, do not quote the content or the statement.
 
 Respond with ONLY JSON:
-{{"violated": [rule numbers, possibly empty], "reason": "one sentence"}}"""
+{{"violated": true or false, "reason": "one sentence"}}"""
     out = gl.nondet.exec_prompt(prompt, response_format="json")
     v = out.get("violated") if isinstance(out, dict) else None
-    n = len(p["rules"])
-    if not isinstance(v, list) or not all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x <= n for x in v):
-        raise gl.vm.UserError(f"{ERR_LLM} expected rule numbers 1-{n} in 'violated'")
-    return {"violated": sorted(set(v)), "reason": str(out.get("reason", ""))[:MAX_REASON]}
-
-
-def _validate(p: dict, leader_result) -> bool:
-    if not isinstance(leader_result, gl.vm.Return):
-        return False  # only LLM errors are possible here; never agree on one
-    t = leader_result.calldata
-    n = len(p["rules"])
-    if not isinstance(t, dict) or not isinstance(t.get("violated"), list) or len(str(t.get("reason", ""))) > MAX_REASON:
-        return False
-    if not all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x <= n for x in t["violated"]):
-        return False
-    try:
-        mine = _judge(p)
-    except Exception:
-        return False
-    # The outcome depends only on whether any rule is violated; honest panels
-    # may list overlapping rules differently.
-    return bool(mine["violated"]) == bool(t["violated"])
+    if not isinstance(v, bool):
+        raise gl.vm.UserError(f"{ERR_LLM} expected a boolean 'violated'")
+    return {"violated": v, "reason": str(out.get("reason", ""))[:MAX_REASON]}
 
 
 def _agree_on_error(leader_result, q: dict, fn) -> bool:
@@ -214,6 +330,21 @@ def _agree_on_error(leader_result, q: dict, fn) -> bool:
         return False
     except Exception:
         return False
+
+
+def _validate(p: dict, leader_result) -> bool:
+    if not isinstance(leader_result, gl.vm.Return):
+        # The same fetch or hash error: the transaction fails and can be retried.
+        return _agree_on_error(leader_result, p, _judge)
+    t = leader_result.calldata
+    if not isinstance(t, dict) or not isinstance(t.get("violated"), bool) or len(str(t.get("reason", ""))) > MAX_REASON:
+        return False
+    try:
+        mine = _judge(p)
+    except Exception:
+        return False
+    # Consensus covers the verdict only; the reason stays the leader's.
+    return mine["violated"] == t["violated"]
 
 
 def _rpc(method: str, params: list):
@@ -328,12 +459,20 @@ class ModCourt(gl.Contract):
 
     @gl.public.write.payable
     def create_community(self, name: str, rules_json: str, appeal_bond: int, reward: int) -> int:
+        """`rules_json`: a JSON list of rule texts, or of {"text", "max_action"}
+        to cap the strongest action a rule allows (default: ban)."""
         try:
-            rules = [str(r).strip() for r in json.loads(rules_json)]
-        except (ValueError, TypeError):
+            raw = json.loads(rules_json)
+            rules = [
+                {"text": str(r["text"] if isinstance(r, dict) else r).strip(), "max": (r.get("max_action") or "ban") if isinstance(r, dict) else "ban"}
+                for r in raw
+            ]
+        except (ValueError, TypeError, KeyError, AttributeError):
             raise gl.vm.UserError(f"{ERR_EXPECTED} rules must be a JSON list")
-        if not (1 <= len(rules) <= MAX_RULES) or any(not (5 <= len(r) <= 300) for r in rules):
+        if not (1 <= len(rules) <= MAX_RULES) or any(not (5 <= len(r["text"]) <= 300) for r in rules):
             raise gl.vm.UserError(f"{ERR_EXPECTED} 1-20 rules of 5-300 characters")
+        if any(r["max"] not in ACTIONS for r in rules):
+            raise gl.vm.UserError(f"{ERR_EXPECTED} max_action must be hide, remove, mute or ban")
         if not (3 <= len(name.strip()) <= 80):
             raise gl.vm.UserError(f"{ERR_EXPECTED} name must be 3-80 characters")
         if appeal_bond <= 0 or reward <= 0:
@@ -349,6 +488,7 @@ class ModCourt(gl.Contract):
                 appeal_bond=u256(appeal_bond),
                 reward=u256(reward),
                 pool=gl.message.value,
+                bond_fund=u256(0),
                 reserved=u256(0),
                 cases=u256(0),
             )
@@ -373,7 +513,8 @@ class ModCourt(gl.Contract):
     def withdraw_pool(self, community_id: int, amount: int) -> None:
         c = self._cm(community_id)
         self._only(c.owner)
-        if amount <= 0 or amount > int(c.pool) - int(c.reserved):
+        # Reservations are covered by the bond fund first; the rest of the pool is free.
+        if amount <= 0 or amount > min(int(c.pool), int(c.pool) + int(c.bond_fund) - int(c.reserved)):
             raise gl.vm.UserError(f"{ERR_EXPECTED} only the unreserved pool can be withdrawn")
         self._pay(c.owner, amount, "withdraw", community_id)  # pays first: nothing changes if it cannot be sent
         c.pool = u256(int(c.pool) - amount)
@@ -381,22 +522,34 @@ class ModCourt(gl.Contract):
     # ── Moderators ───────────────────────────────────────────────────────────
 
     @gl.public.write
-    def act(self, community_id: int, target: str, content_sha256: str, rule: int, action: str) -> int:
+    def act(self, community_id: int, target: str, content_sha256: str, signature: str, rule: int, action: str) -> int:
+        """Record an action on `target`'s post. `signature` is the target's
+        personal_sign of commitment(contract, community_id, content_sha256)."""
         c = self._cm(community_id)
         me = gl.message.sender_address
         if int(self.moderators.get(f"{community_id}:{me.as_hex.lower()}", u256(0))) != 1:
             raise gl.vm.UserError(f"{ERR_EXPECTED} not a moderator")
+        h = f"{community_id}:{me.as_hex.lower()}"
+        lost, appeals = int(self.stats.get(f"{h}:overturned", u256(0))), int(self.stats.get(f"{h}:appeals", u256(0)))
+        if lost >= SUSPEND_AFTER and 2 * lost > appeals:
+            raise gl.vm.UserError(f"{ERR_EXPECTED} moderator suspended: most appealed actions were overturned")
         who = Address(target)
         if who == me:
             raise gl.vm.UserError(f"{ERR_EXPECTED} cannot moderate yourself")
         sha = content_sha256.strip().lower().removeprefix("0x")
         if not SHA_RE.match(sha):
             raise gl.vm.UserError(f"{ERR_EXPECTED} content_sha256 must be 64 hex characters")
-        if not (1 <= rule <= len(json.loads(c.rules))):
+        rules = json.loads(c.rules)
+        if not (1 <= rule <= len(rules)):
             raise gl.vm.UserError(f"{ERR_EXPECTED} no such rule")
         if action not in ACTIONS:
-            raise gl.vm.UserError(f"{ERR_EXPECTED} action must be remove, hide, mute or ban")
-        if int(c.pool) - int(c.reserved) < int(c.reward):
+            raise gl.vm.UserError(f"{ERR_EXPECTED} action must be hide, remove, mute or ban")
+        if ACTIONS.index(action) > ACTIONS.index(rules[rule - 1]["max"]):
+            raise gl.vm.UserError(f"{ERR_EXPECTED} rule {rule} allows at most {rules[rule - 1]['max']}")
+        text = commitment(gl.message.contract_address.as_hex, community_id, sha)
+        if recover_signer(text, signature) != who.as_hex.lower():
+            raise gl.vm.UserError(f"{ERR_EXPECTED} signature is not the member's commitment to this content")
+        if int(c.pool) + int(c.bond_fund) - int(c.reserved) < int(c.reward):
             raise gl.vm.UserError(f"{ERR_EXPECTED} reward pool exhausted: fund it before moderating")
         c.reserved = _add(c.reserved, c.reward)
         case_id = len(self.cases)
@@ -407,14 +560,13 @@ class ModCourt(gl.Contract):
                 moderator=me,
                 target=who,
                 content_sha256=sha,
+                signature=signature.strip().lower(),
                 rule=u256(rule),
                 action=action,
                 at=u256(_now()),
                 status=ACTIVE,
-                content="",
-                statement="",
-                violated="[]",
-                reason="",
+                appealed_at=u256(0),
+                explanation="",
                 decided_at=u256(0),
             )
         )
@@ -424,10 +576,12 @@ class ModCourt(gl.Contract):
         CaseChanged(u256(case_id), u256(community_id), status=ACTIVE).emit()
         return case_id
 
-    # ── Affected user ────────────────────────────────────────────────────────
+    # ── Affected member ──────────────────────────────────────────────────────
 
     @gl.public.write.payable
-    def appeal(self, case_id: int, content: str, statement: str) -> dict:
+    def appeal(self, case_id: int) -> int:
+        """Register a timely appeal: no LLM, nothing that can fail on the
+        network. Returns the resolution deadline."""
         k = self._k(case_id)
         c = self.communities[int(k.community_id)]
         if gl.message.sender_address != k.target:
@@ -436,13 +590,35 @@ class ModCourt(gl.Contract):
             raise gl.vm.UserError(f"{ERR_EXPECTED} appeal window closed")
         if int(gl.message.value) != int(c.appeal_bond):
             raise gl.vm.UserError(f"{ERR_EXPECTED} send exactly the appeal bond")
-        if len(content) > MAX_CONTENT or len(statement) > 1000:
-            raise gl.vm.UserError(f"{ERR_EXPECTED} content up to 4000 characters, statement up to 1000")
-        if hashlib.sha256(content.encode("utf-8")).hexdigest() != k.content_sha256:
-            raise gl.vm.UserError(f"{ERR_EXPECTED} content does not match the moderator's record")
         self.expected_balance = _add(self.expected_balance, gl.message.value)
+        k.status = APPEALED
+        k.appealed_at = u256(_now())
+        self._stat(int(k.community_id), k.moderator, "appeals")
+        CaseChanged(k.id, k.community_id, status=APPEALED).emit()
+        return int(k.appealed_at) + RESOLVE_WINDOW
 
-        params = {"rules": json.loads(c.rules), "rule": int(k.rule), "action": k.action, "content": content, "statement": statement}
+    @gl.public.write
+    def decide(self, case_id: int, content_url: str, statement: str) -> dict:
+        """The member asks for the ruling: validators fetch the post from
+        `content_url` and check it against the signed hash. Neither the post
+        nor `statement` is stored; `statement` is public calldata."""
+        k = self._k(case_id)
+        c = self.communities[int(k.community_id)]
+        if gl.message.sender_address != k.target:
+            raise gl.vm.UserError(f"{ERR_EXPECTED} only the affected user can ask for the ruling")
+        if k.status != APPEALED or _now() > int(k.appealed_at) + RESOLVE_WINDOW:
+            raise gl.vm.UserError(f"{ERR_EXPECTED} no appeal waiting for a ruling")
+        if not URL_RE.match(content_url.strip()) or len(statement) > MAX_STATEMENT:
+            raise gl.vm.UserError(f"{ERR_EXPECTED} an http(s) URL up to 300 characters, statement up to 1000")
+
+        params = {
+            "url": content_url.strip(),
+            "sha": k.content_sha256,
+            "rules": json.loads(c.rules),
+            "rule": int(k.rule),
+            "action": k.action,
+            "statement": statement,
+        }
 
         def leader_fn() -> dict:
             return _judge(params)
@@ -453,21 +629,34 @@ class ModCourt(gl.Contract):
         r = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
         if not r["violated"]:  # pays first: nothing is recorded if the transfer cannot be sent
             self._pay(k.target, int(c.appeal_bond) + int(c.reward), "overturn", case_id)
-        k.content, k.statement = content, statement
-        k.violated, k.reason = json.dumps(r["violated"]), r["reason"]
+        k.explanation = r["reason"]
         k.decided_at = u256(_now())
         c.reserved = u256(int(c.reserved) - int(c.reward))
-        cid = int(k.community_id)
-        self._stat(cid, k.moderator, "appeals")
         if r["violated"]:
             k.status = UPHELD
-            c.pool = _add(c.pool, c.appeal_bond)
+            c.bond_fund = _add(c.bond_fund, c.appeal_bond)
         else:
             k.status = OVERTURNED
-            c.pool = u256(int(c.pool) - int(c.reward))
-            self._stat(cid, k.moderator, "overturned")
+            from_fund = min(int(c.bond_fund), int(c.reward))
+            c.bond_fund = u256(int(c.bond_fund) - from_fund)
+            c.pool = u256(int(c.pool) - (int(c.reward) - from_fund))
+            self._stat(int(k.community_id), k.moderator, "overturned")
         CaseChanged(k.id, k.community_id, status=k.status).emit()
-        return {"status": k.status, "violated": r["violated"], "reason": r["reason"]}
+        return {"status": k.status, "cited_rule_violated": r["violated"], "explanation_unverified": r["reason"]}
+
+    @gl.public.write
+    def expire_unresolved(self, case_id: int) -> None:
+        """Anyone, after the resolution deadline: the bond goes back to the
+        member and the action stands, unreviewed."""
+        k = self._k(case_id)
+        if k.status != APPEALED or _now() <= int(k.appealed_at) + RESOLVE_WINDOW:
+            raise gl.vm.UserError(f"{ERR_EXPECTED} no appeal past its resolution deadline")
+        c = self.communities[int(k.community_id)]
+        self._pay(k.target, int(c.appeal_bond), "refund", case_id)  # pays first
+        k.status = UNRESOLVED
+        k.decided_at = u256(_now())
+        c.reserved = u256(int(c.reserved) - int(c.reward))
+        CaseChanged(k.id, k.community_id, status=UNRESOLVED).emit()
 
     @gl.public.write
     def release(self, case_id: int) -> None:
@@ -549,16 +738,20 @@ class ModCourt(gl.Contract):
     @gl.public.view
     def get_community(self, community_id: int) -> dict:
         c = self._cm(community_id)
+        rules = json.loads(c.rules)
         return {
             "id": int(c.id),
             "owner": c.owner.as_hex,
             "name": c.name,
-            "rules": json.loads(c.rules),
+            "rules": [r["text"] for r in rules],
+            "max_actions": [r["max"] for r in rules],
             "appeal_bond": int(c.appeal_bond),
             "reward": int(c.reward),
             "pool": int(c.pool),
+            "bond_fund": int(c.bond_fund),
             "reserved": int(c.reserved),
-            "free": int(c.pool) - int(c.reserved),
+            "withdrawable": max(0, min(int(c.pool), int(c.pool) + int(c.bond_fund) - int(c.reserved))),
+            "free": int(c.pool) + int(c.bond_fund) - int(c.reserved),
             "case_count": int(c.cases),
         }
 
@@ -567,9 +760,17 @@ class ModCourt(gl.Contract):
         return len(self.communities)
 
     @gl.public.view
-    def get_cases(self, community_id: int) -> list:
+    def get_commitment(self, community_id: int, content_sha256: str) -> str:
+        """The exact text a member's client signs for a post."""
+        return commitment(gl.message.contract_address.as_hex, community_id, content_sha256.strip().lower().removeprefix("0x"))
+
+    @gl.public.view
+    def get_cases(self, community_id: int, offset: int, limit: int) -> dict:
+        """Cases of a community, oldest first."""
         c = self._cm(community_id)
-        return [self.get_case(int(self.case_index[f"{community_id}:{k}"])) for k in range(int(c.cases))]
+        total = int(c.cases)
+        ks = range(max(0, offset), min(total, max(0, offset) + max(0, min(limit, PAGE))))
+        return {"total": total, "items": [self.get_case(int(self.case_index[f"{community_id}:{k}"])) for k in ks]}
 
     @gl.public.view
     def get_case(self, case_id: int) -> dict:
@@ -580,15 +781,17 @@ class ModCourt(gl.Contract):
             "moderator": k.moderator.as_hex,
             "target": k.target.as_hex,
             "content_sha256": k.content_sha256,
+            "signature": k.signature,
             "rule": int(k.rule),
             "action": k.action,
             "at": int(k.at),
             "appeal_until": int(k.at) + APPEAL_WINDOW,
             "status": k.status,
-            "content": k.content,
-            "statement": k.statement,
-            "violated": json.loads(k.violated),
-            "reason": k.reason,
+            "appealed_at": int(k.appealed_at),
+            "resolve_by": int(k.appealed_at) + RESOLVE_WINDOW if int(k.appealed_at) else 0,
+            # What consensus decided: whether the cited rule was violated.
+            "cited_rule_violated": {UPHELD: True, OVERTURNED: False}.get(k.status),
+            "explanation_unverified": k.explanation,
             "decided_at": int(k.decided_at),
         }
 
@@ -603,8 +806,11 @@ class ModCourt(gl.Contract):
 
     @gl.public.view
     def get_payout(self, payout_id: int) -> dict:
+        if payout_id < 0 or payout_id >= len(self.payouts):
+            raise gl.vm.UserError(f"{ERR_EXPECTED} payout not found")
         p = self.payouts[payout_id]
         return {
+            "id": payout_id,
             "to": p.to.as_hex,
             "amount": int(p.amount),
             "kind": p.kind,
@@ -614,6 +820,18 @@ class ModCourt(gl.Contract):
             "at": int(p.at),
             "tx": p.tx,
         }
+
+    @gl.public.view
+    def get_payouts(self, start: int, limit: int, only_unsettled: bool) -> dict:
+        """Payouts from id `start` up, oldest first; with `only_unsettled`, only
+        those still SENT. Continue from `next` (None at the end)."""
+        total, out, i = len(self.payouts), [], max(0, start)
+        stop = min(total, i + 10 * PAGE)  # ponytail: bounded scan per call; follow `next` for more
+        while i < stop and len(out) < max(0, min(limit, PAGE)):
+            if not only_unsettled or self.payouts[i].status == SENT:
+                out.append(self.get_payout(i))
+            i += 1
+        return {"total": total, "items": out, "next": i if i < total else None}
 
     @gl.public.view
     def get_accounting(self) -> dict:

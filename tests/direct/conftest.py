@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timedelta
 
 import pytest
+from eth_account import Account
+from eth_account.messages import encode_defunct
 
 GEN = 10**18
 BOND = GEN // 10
@@ -12,7 +14,12 @@ REWARD = GEN // 5
 POOL = 2 * REWARD  # room for exactly two open actions
 RULES = ["No personal attacks or insults aimed at other members", "No spam or unsolicited advertising", "Stay on topic: posts must be about GenLayer"]
 CONTENT = "Has anyone benchmarked the Bradbury validators? My contract takes 40s to finalize."
+STATEMENT = "It is about Bradbury, which is GenLayer."
+URL = "https://member.example/post-0.txt"
 LLM = r"independent appeals panel"
+# Charlie posts and signs; the other members only need addresses.
+CHARLIE = Account.from_key("0x" + "c4" * 32)
+MALLORY = Account.from_key("0x" + "4d" * 32)
 
 
 def to_hex(addr) -> str:
@@ -25,6 +32,12 @@ def to_hex(addr) -> str:
 
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def sign(vm, sha_, signer=CHARLIE, community_id=0, contract=None) -> str:
+    """`signer`'s personal_sign of the commitment to a post, as a wallet produces it."""
+    text = f"ModCourt content commitment\ncontract: {(contract or to_hex(vm._contract_address)).lower()}\ncommunity: {community_id}\nsha256: {sha_}"
+    return "0x" + Account.sign_message(encode_defunct(text=text), signer.key).signature.hex().removeprefix("0x")
 
 
 class Ledger:
@@ -65,6 +78,13 @@ def tick(vm, seconds=1):
 
 
 @pytest.fixture
+def direct_charlie():
+    from genlayer.py.types import Address
+
+    return Address(CHARLIE.address)
+
+
+@pytest.fixture
 def mc(direct_vm, direct_deploy, direct_alice, direct_bob):
     """Community 0 owned by Alice, Bob is a moderator."""
     direct_vm.warp("2030-01-01T10:00:00Z")
@@ -78,28 +98,39 @@ def mc(direct_vm, direct_deploy, direct_alice, direct_bob):
     return c
 
 
+def act(vm, c, content=CONTENT, rule=3, action="remove", signer=CHARLIE, target=None, sig=None):
+    return c.act(0, target or signer.address, sha(content), sign(vm, sha(content), signer) if sig is None else sig, rule, action)
+
+
 @pytest.fixture
-def case(mc, direct_vm, direct_bob, direct_charlie):
-    """Case 0: Bob removes Charlie's post citing rule 3."""
+def case(mc, direct_vm, direct_bob):
+    """Case 0: Bob removes Charlie's signed post citing rule 3."""
     direct_vm.sender = direct_bob
-    mc.act(0, to_hex(direct_charlie), sha(CONTENT), 3, "remove")
+    act(direct_vm, mc)
     return mc
 
 
-def ruling(vm, violated=(), reason="ruled"):
+def ruling(vm, violated=False, reason="ruled", body=CONTENT, status=200):
+    """The member's copy at URL and the LLM's answer, for leader and validators."""
     vm.clear_mocks()
-    vm.mock_llm(LLM, json.dumps({"violated": list(violated), "reason": reason}))
+    vm.mock_web(r"member\.example", {"status": status, "body": body})
+    vm.mock_llm(LLM, json.dumps({"violated": violated, "reason": reason}))
 
 
-def appeal(vm, c, who, violated=(), content=CONTENT, statement="It is about Bradbury, which is GenLayer.", case_id=0, value=BOND):
-    ruling(vm, violated)
+def appeal(vm, c, who, case_id=0, value=BOND):
     vm.sender = who
     vm.value = value
-    chain_balance(vm, POOL + value)
     try:
-        return c.appeal(case_id, content, statement)
+        return c.appeal(case_id)
     finally:
         vm.value = 0
+
+
+def decide(vm, c, who, violated=False, body=CONTENT, statement=STATEMENT, case_id=0, url=URL, status=200):
+    ruling(vm, violated, body=body, status=status)
+    vm.sender = who
+    chain_balance(vm, POOL + BOND)
+    return c.decide(case_id, url, statement)
 
 
 # ── Fake Bradbury RPC for settle_payout ─────────────────────────────────────
