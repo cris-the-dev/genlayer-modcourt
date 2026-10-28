@@ -26,39 +26,39 @@ anyone    ── release(case) after 7 days without an appeal ─▶ FINAL, rese
 ## Live deployment
 
 App: https://modcourt.cristhedev.com (communities, policy, moderator stats, cases and every role's actions; source in [`app/`](app/))  
-Testnet Bradbury (chainId 4221): [`0xC7E388a86d225e4bA721325b76322A389639d897`](https://explorer-bradbury.genlayer.com/address/0xC7E388a86d225e4bA721325b76322A389639d897)
+Testnet Bradbury Phase 2 (chainId 4221, GenVM v0.3): [`0x7fB191BDCeF0C9E38A71AF62bF3bF6E2169a1DFE`](https://explorer-bradbury.genlayer.com/address/0x7fB191BDCeF0C9E38A71AF62bF3bF6E2169a1DFE)
 
 ## Bradbury evidence
 
-Run by [`tests/integration/test_mod_court.py`](tests/integration/test_mod_court.py) (1 passed, 55 min). Contract `0xC7E388a86d225e4bA721325b76322A389639d897` (deploy [`0x7a17c8da…`](https://explorer-bradbury.genlayer.com/tx/0x7a17c8daa3cb46079e7b05712ba80c5e634e35013c9a4602df0c83aa21ce3e13)), code `build/mod_court.py` (sha256 `03731525…`). Owner (also moderator) and member are separate accounts. Neither post nor statement appears in any view afterwards; the explanations below are the leader's, as returned in `explanation_unverified`:
+Run by [`tests/integration/bradbury.mjs`](tests/integration/bradbury.mjs) on Bradbury Phase 2 (all checks passed). Contract `0x7fB191BDCeF0C9E38A71AF62bF3bF6E2169a1DFE` (deploy [`0xd9533d6e…`](https://explorer-bradbury.genlayer.com/tx/0xd9533d6e3e9d3dca78a466aa830eda73fa5008e86e525e7b3f55052852ddc55f)), code `build/mod_court.py` (sha256 `00ee340f…`). Owner (also moderator) and member are separate accounts. Every transaction carries a fee deposit; paying calls also allocate their payout's gas. Neither post nor statement appears in any view afterwards; the explanations below are the leader's, as returned in `explanation_unverified`:
 
-- case 0: "The post explicitly discusses the required topic by asking a technical question about its functionality."
-- case 1: "The content is an unsolicited advertisement for a commercial service, which constitutes spam."
+- case 0: "The content is a direct technical question about performance on the GenLayer network, which is on-topic."
+- case 1: "The content is a clear and unsolicited advertisement for a commercial service."
 
 | Step | Transaction | Outcome |
 |---|---|---|
-| create community: 3 rules capped ban / remove / remove, bond 0.0005, reward 0.001, pool 0.002 GEN | [`0xb0868e1c…`](https://explorer-bradbury.genlayer.com/tx/0xb0868e1ced8acf47c67ac163be20f26c885818887165780cf65a369ce60e44ba) | ok |
-| act with the member's signature for a *different* post | [`0x45516c2f…`](https://explorer-bradbury.genlayer.com/tx/0x45516c2f5999001edb958e42e377f053b7bb9884fa8320f6cb19fc3e5e6af706) | rejected: signature does not match the hash |
-| act `ban` under rule 2 (max remove) | [`0x57663d8a…`](https://explorer-bradbury.genlayer.com/tx/0x57663d8a81adaac0a36b4871c36dda5630d23d752dbeba5faf0da671ce99b64e) | rejected: disproportionate |
-| remove an on-topic question (rule 3), member-signed hash | [`0xa56f1617…`](https://explorer-bradbury.genlayer.com/tx/0xa56f1617ac3ddd82729c60bc69730a17d2b499eb130a86b61a777406e941723e) | case 0, reward reserved |
-| remove a spam post (rule 2), member-signed hash | [`0x13e2b4a9…`](https://explorer-bradbury.genlayer.com/tx/0x13e2b4a9af5768f207de002f57c69e0fc2bc04f5becbdc0b833588c6a25b2383) | case 1, reward reserved |
-| a third action | [`0x18b32936…`](https://explorer-bradbury.genlayer.com/tx/0x18b3293668d790356bba67c76dc976ac7420d9c4ea8c93d6ac4f549fae7cdced) | rejected: the pool is fully reserved |
-| member appeals case 0 (bond only, no AI) | [`0x7564ddc0…`](https://explorer-bradbury.genlayer.com/tx/0x7564ddc026b814100cf43f2807d1889dee1378b7310b6d0a8f303cccd7fd9424) | APPEALED, `resolve_by` set |
-| ruling from `evidence/missing.txt` (404) | [`0x862ae7be…`](https://explorer-bradbury.genlayer.com/tx/0x862ae7be14a1899bb768afc3b66ce579fb044110e323013a6e3c6f0770032ed6) | rejected: original unavailable; case still APPEALED |
-| ruling from `evidence/spam.txt` (another post) | [`0xef9abd16…`](https://explorer-bradbury.genlayer.com/tx/0xef9abd160eadac7f686182b55112e838f595edf7926f3b556699f17756d3f398) | rejected: hash mismatch; case still APPEALED |
-| ruling from `evidence/fine.txt` (retry) | [`0xf14cadae…`](https://explorer-bradbury.genlayer.com/tx/0xf14cadae6da5abeafd8f079ee09383b2c8e92b248f39d889d40419afc81db077) | **OVERTURNED** (`cited_rule_violated: false`): bond + reward = payout 0 |
-| member appeals case 1 | [`0xc380ce7b…`](https://explorer-bradbury.genlayer.com/tx/0xc380ce7bde0dd102632da113ca189db817ad8a6a6db57d68ff4eaaf69392269f) | APPEALED |
-| ruling from `evidence/spam.txt` | [`0x8f5d769f…`](https://explorer-bradbury.genlayer.com/tx/0x8f5d769fca10d7d6162cf9608f651a15a41d5810be49c0a771fa2f02ee4f8bdf) | **UPHELD**: bond goes to the bond fund |
-| owner withdraws all it may (0.001; reserved 0, bond fund 0.0005 not withdrawable) | [`0xd08607ce…`](https://explorer-bradbury.genlayer.com/tx/0xd08607ce2d88ab97ed1777aedbce717c04ea1b055b820c6fd9394e16a9be0d91) | payout 1 |
+| create community: 3 rules capped ban / remove / remove, bond 0.0005, reward 0.001, pool 0.002 GEN | [`0xddf76324…`](https://explorer-bradbury.genlayer.com/tx/0xddf76324d0adb34c25ad63cd9c499ec14c78a6b11863b3eaab121f6bfddab2c7) | ok |
+| act with the member's signature for a *different* post | [`0xf3094913…`](https://explorer-bradbury.genlayer.com/tx/0xf3094913e6eadf967d5ded1e41b359309ea9922258a33f96d84d6cdd2c67df8f) | rejected: signature does not match the hash |
+| act `ban` under rule 2 (max remove) | [`0xb24bce1a…`](https://explorer-bradbury.genlayer.com/tx/0xb24bce1a1823d969854977859d419869f378345aedcef38598a228c59235e22a) | rejected: disproportionate |
+| remove an on-topic question (rule 3), member-signed hash | [`0xebc03228…`](https://explorer-bradbury.genlayer.com/tx/0xebc03228b181c01de7d1538c7a4fb9d65720f8fd9d87fcf686d069ad604e34ce) | case 0, reward reserved |
+| remove a spam post (rule 2), member-signed hash | [`0x1155c4e3…`](https://explorer-bradbury.genlayer.com/tx/0x1155c4e371f95a82ce8b58be07935cc08d0338fb8887feb8d6cd0724d8f75c9a) | case 1, reward reserved |
+| a third action | [`0xe8d6a932…`](https://explorer-bradbury.genlayer.com/tx/0xe8d6a932c48dc5792d6f39aa22f880310160fbe1ead768c11e8806b10cfca0e7) | rejected: the pool is fully reserved |
+| member appeals case 0 (bond only, no AI) | [`0x5abde8ae…`](https://explorer-bradbury.genlayer.com/tx/0x5abde8aea571b21b5745445e17dbb9795056a2592b956495ae89da6fd4dbcd03) | APPEALED, `resolve_by` = appeal + 3 days |
+| ruling from `evidence/missing.txt` (404) | [`0x8ed817cb…`](https://explorer-bradbury.genlayer.com/tx/0x8ed817cbaa3839899d75a8f0ffe89b7d396b24076ebec1caf6fed3378587e49e) | rejected: original unavailable; case still APPEALED |
+| ruling from `evidence/spam.txt` (another post) | [`0x9aabb65a…`](https://explorer-bradbury.genlayer.com/tx/0x9aabb65aabdfe555e0ecc1a786e666ed1dd891b81765f769fb151e7eaf35bfec) | rejected: hash mismatch; case still APPEALED |
+| ruling from `evidence/fine.txt` (retry) | [`0xc1840d45…`](https://explorer-bradbury.genlayer.com/tx/0xc1840d457eab741bdd5e24e8526c688196f84d42c4e2407400d49324dc79cbe3) | **OVERTURNED** (`cited_rule_violated: false`): bond + reward = payout 0 |
+| member appeals case 1 | [`0xf1da26c4…`](https://explorer-bradbury.genlayer.com/tx/0xf1da26c4e4082c8a1474bc0dee0ca5460383473be932ace44f7efdc515428fea) | APPEALED |
+| ruling from `evidence/spam.txt` | [`0x643cba33…`](https://explorer-bradbury.genlayer.com/tx/0x643cba33186577a77b5b03ba7e2e3e809341cc4182dc35b406756e55dcb772ec) | **UPHELD**: bond goes to the bond fund |
+| owner withdraws all it may (0.001; reserved 0, bond fund 0.0005 not withdrawable) | [`0x45976d58…`](https://explorer-bradbury.genlayer.com/tx/0x45976d58d94e1a8644066b5a3719af0789087f31626766076709ac48e2ab48dc) | payout 1 |
 
-Both payouts were listed by `get_payouts(0, 50, true)` and settled from their own transfer after the paying transaction finalized. Balance change is the recipient's `eth_getBalance` at the finalizing block minus the block before, checked by the test:
+Moderator stats afterwards: 2 actions, 2 appeals, 1 overturned. Both payouts were settled from their own transfer once the paying transaction finalized (`settle_payout` checks the paying tx, its finalization and the executed message):
 
-| Payout | Kind | Paid by | Finalized by (block) | Recipient balance | `settle_payout` | Result |
+| Payout | Kind | Amount | Paid by | Finalized by | `settle_payout` | Result |
 |---|---|---|---|---|---|---|
-| 0 | overturn → member | [`0xf14cadae…`](https://explorer-bradbury.genlayer.com/tx/0xf14cadae6da5abeafd8f079ee09383b2c8e92b248f39d889d40419afc81db077) | [`0x58291745…`](https://explorer-bradbury.genlayer.com/tx/0x58291745fda0a013202538ac6a27612e0fbf590b5e8086ffd5ce8518fd4d4de5) (25745621) | +0.0015 GEN | [`0x6f69b6c5…`](https://explorer-bradbury.genlayer.com/tx/0x6f69b6c5c3be8826feb38586e92a4c63c3bad07806ab66463f35cd2e526c8e13) | DELIVERED |
-| 1 | withdraw → owner | [`0xd08607ce…`](https://explorer-bradbury.genlayer.com/tx/0xd08607ce2d88ab97ed1777aedbce717c04ea1b055b820c6fd9394e16a9be0d91) | [`0xaea516c5…`](https://explorer-bradbury.genlayer.com/tx/0xaea516c50d2dfc1bffdb7ce1d2da3815a43e2f2f70acbcab787564e2a542299f) (25746392) | +0.001 GEN | [`0x4bc7b969…`](https://explorer-bradbury.genlayer.com/tx/0x4bc7b9691a82d0e2bde8860b440498731a717fd8160f6129e7d3c60f5398b044) | DELIVERED |
+| 0 | overturn → member | 0.0015 GEN | [`0xc1840d45…`](https://explorer-bradbury.genlayer.com/tx/0xc1840d457eab741bdd5e24e8526c688196f84d42c4e2407400d49324dc79cbe3) | [`0x46ff360a…`](https://explorer-bradbury.genlayer.com/tx/0x46ff360a0c76e8cee630ffc2a511f95a6350c7212697a973975435f1b946d78f) | [`0x1508e17b…`](https://explorer-bradbury.genlayer.com/tx/0x1508e17bb64f7fae296621f53f45d9a29e557a271e9cd23d8cf749d663592302) | DELIVERED |
+| 1 | withdraw → owner | 0.001 GEN | [`0x45976d58…`](https://explorer-bradbury.genlayer.com/tx/0x45976d58d94e1a8644066b5a3719af0789087f31626766076709ac48e2ab48dc) | [`0xec24b9db…`](https://explorer-bradbury.genlayer.com/tx/0xec24b9db51159794013dbaf7038d30e7720b2f01e132a7443b06eeacc614b840) | [`0x602b963b…`](https://explorer-bradbury.genlayer.com/tx/0x602b963b45bf9090acbe7194de54d1a5a479ca524358371b2493b68a97236d45) | DELIVERED |
 
-Settling the same payout again is rejected ([`0xb6926ad2…`](https://explorer-bradbury.genlayer.com/tx/0xb6926ad2a4ffbc86c4ca805de38ad038ac9deb946f567944b7b920495f1d41d5), [`0x53b0a194…`](https://explorer-bradbury.genlayer.com/tx/0x53b0a1947e38a2440f6f027a2dcd11783ffbe290209398b76012444cb83811a2)). Afterwards no payout is unsettled and `get_accounting` reports `unaccounted: 0`. The resolution deadline (3 days) and `expire_unresolved` are covered in Direct Mode only.
+Settling the same payout again is rejected ([`0x309e379b…`](https://explorer-bradbury.genlayer.com/tx/0x309e379b80bce70bba10ee7de69147ba0f174ab38a97b103b3e382eb6912f667), [`0x5ba25400…`](https://explorer-bradbury.genlayer.com/tx/0x5ba2540094b5b0d18371cb830105999b58709048184370cdb030ec9515ec64ec)). Afterwards `get_accounting` reports `unaccounted: 0`. The resolution deadline (3 days) and `expire_unresolved` are covered in Direct Mode only.
 
 ## Appeals: registration first, ruling second
 
@@ -196,9 +196,10 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 genvm-lint check contracts/mod_court.py
 pytest tests/direct -v                         # 66 tests
-# integration, on Bradbury, against the packed code (keys in GL_PK0..2 env vars)
+# end-to-end on Bradbury Phase 2, against the packed code (keys in GL_PK0, GL_PK1)
 python deploy/shrink.py contracts/mod_court.py build/mod_court.py --pack
-cd tests/integration && gltest . -v -s --network testnet_bradbury
+npm i genlayer-js@2.0.0-rc.2   # plus the fee-estimate patch in app/README.md
+node tests/integration/bradbury.mjs build/mod_court.py
 ```
 
 Bradbury rejects deploys above ~20 KB of code; deploy the output of

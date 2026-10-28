@@ -81,7 +81,7 @@ def _prompt(direct_vm, c, who, body, statement, case_id=0, violated=True):
 
     def spy(vm, data):
         seen["prompt"] = data["prompt"]
-        return {"ok": {"violated": violated, "reason": "x"}}
+        return {"ok": json.dumps({"violated": violated, "reason": "x"})}
 
     wm._handle_llm_request = spy
     try:

@@ -1,10 +1,13 @@
-// Wallet + contract helpers for the ModCourt app (testnet Bradbury, MetaMask).
-import { createClient, testnetBradbury } from "./genlayer.js"; // bundle of genlayer-js 1.1.8 (see README);
+// Wallet + contract helpers for the ModCourt app (testnet Bradbury Phase 2, MetaMask).
+import { createClient, testnetBradbury, MessageType, encodeExternalMessageFeeParams } from "./genlayer.js"; // bundle of genlayer-js 2.0.0-rc.2 (see README);
 
 export const EXPLORER = "https://explorer-bradbury.genlayer.com";
-const RPC = testnetBradbury.rpcUrls.default.http[0];
+// The chain's default RPC (rpc.testnet-chain.genlayer.com) does not serve gen_call; this one serves the same chain.
+const RPC = "https://rpc-bradbury.genlayer.com";
+// Gas the contract's payout (an external EVM message) may use on delivery; unused budget is refunded.
+const PAYOUT_GAS = 100000n, PAYOUT_GAS_PRICE = 1000000000n;
 const CHAIN_HEX = "0x" + testnetBradbury.id.toString(16);
-const CONSENSUS_MAIN = "0x0112Bf6e83497965A5fdD6Dad1E447a6E004271D";
+const CONSENSUS_MAIN = "0x2e2766cbc3e5e61ce93bbcdcbb3eacb82082a019";
 const T_FINALIZED = "0x24196ec40f90671b7144e716978686b4f3c7d6b00b23da3971ef2b52af27d87f";
 const NOT_APPLIED = ["UNDETERMINED", "CANCELED", "LEADER_TIMEOUT", "VALIDATORS_TIMEOUT"];
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
@@ -15,7 +18,7 @@ export const plain = (v) =>
   : Array.isArray(v) ? v.map(plain)
   : typeof v === "bigint" ? (Number.isSafeInteger(Number(v)) ? Number(v) : v) : v;
 
-const reader = createClient({ chain: testnetBradbury });
+const reader = createClient({ chain: testnetBradbury, endpoint: RPC });
 let account = null;
 
 export async function rpc(method, params) {
@@ -59,10 +62,18 @@ export function contract(address) {
     read: async (functionName, args = []) =>
       plain(await reader.readContract({ address, functionName, args, jsonSafeReturn: false, transactionHashVariant: "latest-final" })),
     // Sends a tx through MetaMask and resolves only once it is FINALIZED with a successful execution result.
-    write: async (functionName, args = [], value = 0n, { onHash, onProgress } = {}) => {
+    // `payee`: the address the call may pay; its transfer's gas is allocated from this tx's fee deposit.
+    write: async (functionName, args = [], value = 0n, { onHash, onProgress, payee } = {}) => {
       if (!account) throw new Error("Connect a wallet first");
-      const client = createClient({ chain: testnetBradbury, account });
-      const hash = await client.writeContract({ address, functionName, args, value });
+      const client = createClient({ chain: testnetBradbury, endpoint: RPC, account });
+      // Bradbury Phase 2 rejects transactions without a fee deposit; the unused part is refunded.
+      const messageAllocations = payee ? [{
+        messageType: MessageType.External, onAcceptance: false, recipient: payee, budget: PAYOUT_GAS * PAYOUT_GAS_PRICE,
+        callKey: "0x" + "00".repeat(32), feeParams: encodeExternalMessageFeeParams({ gasLimit: PAYOUT_GAS, maxGasPrice: PAYOUT_GAS_PRICE }),
+      }] : undefined;
+      const e = await client.estimateTransactionFees(messageAllocations ? { messageAllocations } : {});
+      const fees = { distribution: e.distribution, feeValue: e.feeValue, ...(payee && { messageAllocations: e.messageAllocations }) };
+      const hash = await client.writeContract({ address, functionName, args, value, fees });
       onHash?.(hash);
       const deadline = Date.now() + 60 * 60_000;
       let last = null, since = Date.now();
@@ -155,11 +166,12 @@ const STAGE = {
 
 // Run a write and confirm it: FINALIZED + successful execution + `check()` true on the finalized state.
 // Returns true only when all three hold.
-export async function send(c, label, fn, args, value = 0n, check) {
+export async function send(c, label, fn, args, value = 0n, check, payee) {
   status(`${label}: confirm in your wallet…`);
   let hash;
   try {
     hash = await c.write(fn, args, value, {
+      payee,
       onHash: (h) => status(`${label}: submitted, waiting for validators…`, false, h),
       onProgress: (s, res, h) => status(`${label}: ${STAGE[s] ?? `${s.toLowerCase().replaceAll("_", " ")}…`}${s === "ACCEPTED" && res === "FINISHED_WITH_ERROR" ? " (the contract reported an error)" : ""}`, false, h),
     });

@@ -95,7 +95,7 @@
 
 <script type="module">
 import { contract, wireWallet, send, status, gen, toWei, esc, short, $, EXPLORER, personalSign, payingTx, finalizeTx } from "./gl.js";
-const ADDR = "0xC7E388a86d225e4bA721325b76322A389639d897";
+const ADDR = "0x7fB191BDCeF0C9E38A71AF62bF3bF6E2169a1DFE";
 const mc = contract(ADDR);
 const B = BigInt, PER = 10;
 let me = null, items = [], view = { id: null, cases: [], oldest: 0, payouts: [], next: 0 };
@@ -257,30 +257,30 @@ $("#detail").addEventListener("click", async (e) => {
   const done = {
     appeal: () => send(mc, `Appeal case #${arg}`, "appeal", [arg], B(c.appeal_bond), caseIs(arg, "APPEALED")),
     release: () => send(mc, `Finalise case #${arg}`, "release", [arg], 0n, caseIs(arg, "FINAL")),
-    expire_unresolved: () => send(mc, `Refund bond of case #${arg}`, "expire_unresolved", [arg], 0n, caseIs(arg, "UNRESOLVED")),
+    expire_unresolved: async () => send(mc, `Refund bond of case #${arg}`, "expire_unresolved", [arg], 0n, caseIs(arg, "UNRESOLVED"), (await mc.read("get_case", [arg])).target),
   }[fn];
   if (done && await done()) load(view.id);
 });
 $("#detail").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = e.target, fn = f.dataset.form, id = view.id, c = items.find((x) => x.id === id);
-  let args, value = 0n, check;
+  let args, value = 0n, check, payee; // payee: who the call may pay (see gl.js)
   try {
     if (fn === "decide") {
       const k = await mc.read("get_case", [Number(f.dataset.case)]);
       // Best effort: most hosts block cross-origin reads, so only a successful fetch can stop the transaction.
       const body = await fetch(f.url.value).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null);
       if (body && (await sha256(body)) !== k.content_sha256) return status("The page at that URL is not the signed post (SHA-256 differs). Validators would reject it.", true);
-      args = [k.id, f.url.value.trim(), f.statement.value]; check = caseIs(k.id, "UPHELD", "OVERTURNED");
+      args = [k.id, f.url.value.trim(), f.statement.value]; check = caseIs(k.id, "UPHELD", "OVERTURNED"); payee = k.target;
     } else if (fn === "act") {
       args = [id, f.target.value, f.sha.value.trim().toLowerCase().replace(/^0x/, ""), f.sig.value.trim(), Number(f.rule.value), f.action.value];
       check = async () => (await community(id)).case_count === c.case_count + 1;
     } else if (fn === "fund") { args = [id]; value = toWei(f.amount.value); check = async () => B((await community(id)).pool) === B(c.pool) + value; }
     else if (fn === "set_moderator") { const on = f.on.value === "1"; args = [id, f.who.value, on]; check = async () => (await mc.read("is_moderator", [id, f.who.value])) === on; }
-    else if (fn === "withdraw_pool") { const a = toWei(f.amount.value); args = [id, a]; check = async () => B((await community(id)).pool) === B(c.pool) - a; }
-    else { args = [f.to.value]; check = async () => B(await mc.read("get_recoverable", [me])) === 0n; }
+    else if (fn === "withdraw_pool") { const a = toWei(f.amount.value); args = [id, a]; payee = c.owner; check = async () => B((await community(id)).pool) === B(c.pool) - a; }
+    else { args = [f.to.value]; payee = f.to.value; check = async () => B(await mc.read("get_recoverable", [me])) === 0n; }
   } catch (err) { return status(err.message, true); }
-  if (await send(mc, fn.replaceAll("_", " "), fn, args, value, check)) load(id);
+  if (await send(mc, fn.replaceAll("_", " "), fn, args, value, check, payee)) load(id);
 });
 $("#sign").addEventListener("submit", async (e) => {
   e.preventDefault();
