@@ -138,6 +138,15 @@ const ids = (await settled("get_cases", [cid, 0, 10], (x) => x.items.length === 
 check(ids.length === 2, `cases ${ids}`);
 const [k0, k1] = ids;
 
+// Amending the policy: the open cases stay bound to v0 (case 0 cites rule 3, which v1 drops).
+const V1 = JSON.stringify([JSON.parse(RULES)[0], JSON.parse(RULES)[1]]);
+await fails("only the owner can amend", c1, "amend by the member", "amend_rules", [cid, V1]);
+await ok(c0, "amend_rules (drop rule 3)", "amend_rules", [cid, V1]);
+const cv = await settled("get_community", [cid], (x) => Number(x.policy_version) === 1);
+const pv0 = await read("get_policy", [cid, 0]);
+check(Number(cv.policy_version) === 1 && cv.rules.length === 2 && pv0.rules.length === 3, "policy v1 has 2 rules, v0 still readable with 3");
+check((await Promise.all(ids.map((i) => read("get_case", [i])))).every((x) => Number(x.policy_version) === 0), "cases keep policy v0");
+
 await ok(c1, `appeal case ${k0}`, "appeal", [k0], { value: BOND });
 let k = await settled("get_case", [k0], (x) => x.status === "APPEALED");
 check(k.status === "APPEALED" && Number(k.resolve_by) === Number(k.appealed_at) + 3 * 86400, "appealed, 3 days to rule");

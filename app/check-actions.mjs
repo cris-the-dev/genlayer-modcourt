@@ -11,7 +11,7 @@ const { gen, toWei } = new Function(`${pick("gen")}\n${pick("toWei")}\nreturn { 
 const esc = (s) => String(s ?? "");
 const make = new Function("esc", "gen", "when", "B", "ctx", `let me = ctx.me; const cls = { OVERTURNED: "ok", UPHELD: "bad" }; ${body}; return { actions, ruling };`);
 const OWN = "0xowner", MOD = "0xmod", U = "0xUser", now = Date.now() / 1000;
-const comm = { owner: OWN, rules: ["No insults at members"], max_actions: ["ban"], appeal_bond: 10n ** 15n, reward: 2n * 10n ** 15n, free: 4n * 10n ** 15n, withdrawable: 10n ** 15n };
+const comm = { owner: OWN, rules: ["No insults at members"], max_actions: ["ban"], appeal_bond: 10n ** 15n, reward: 2n * 10n ** 15n, free: 4n * 10n ** 15n, withdrawable: 10n ** 15n, policy_version: 0 };
 const open = { id: 0, status: "ACTIVE", target: U, moderator: MOD, action: "remove", rule: 1, appeal_until: now + 999, resolve_by: 0, content_sha256: "ab".repeat(32) };
 const appealed = { ...open, status: "APPEALED", resolve_by: now + 999 };
 const fns = (me) => make(esc, gen, () => "T", BigInt, { me });
@@ -28,6 +28,7 @@ check("past the resolution deadline: anyone can refund, no ruling form", run("0x
 check("decided or unresolved cases: no case actions", run(U, ["UPHELD", "OVERTURNED", "UNRESOLVED", "FINAL"].map((s) => ({ ...open, status: s }))) === "");
 check("moderator: hash + signature form, shows rule caps, disabled when the pool is out", run(MOD, [], true).includes('name="sig"') && run(MOD, [], true).includes("(max ban)") && !run(MOD, [], true).includes("disabled") && run(MOD, [], true, { free: 10n ** 15n }).includes("disabled"));
 check("owner: fund, moderators, withdraw only the withdrawable amount", run(OWN).includes('data-form="fund"') && run(OWN).includes('data-form="set_moderator"') && run(OWN).includes("max 0.001 GEN") && !run(OWN, [], false, { withdrawable: 0 }).includes("withdraw_pool"));
+check("owner: amend form prefilled with caps, publishes the next version", run(OWN, [], false, { rules: ["No spam", "Be kind"], max_actions: ["remove", "ban"], policy_version: 2 }).includes('data-form="amend_rules"') && run(OWN, [], false, { rules: ["No spam", "Be kind"], max_actions: ["remove", "ban"], policy_version: 2 }).includes("No spam | remove\nBe kind</textarea>") && run(OWN).includes("Publish v1") && !run("0xother").includes("amend_rules"));
 check("member with no cases: nothing", run("0xother") === "");
 check("recover only with a failed transfer", run("0xother", [], false, {}, 5).includes('data-form="recover"') && !run("0xother", [], false, {}, 0n).includes("recover"));
 const r = fns(U).ruling;

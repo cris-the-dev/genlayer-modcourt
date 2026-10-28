@@ -34,6 +34,11 @@ one-sentence explanation is the leader's alone and is labelled as such.
                                fund, which only pays later overturn rewards
                                and can never be withdrawn by the owner
 
+Amendments. The owner can amend the policy; each amendment is a new
+version. A case is always judged against the version in force when the
+action was taken, so changing a rule cannot decide a pending appeal, and new
+actions use the latest version.
+
 Neither the post nor the statement is stored in contract state (the
 statement is still public calldata). A moderator with at least 3 overturned
 actions, more than half of their appealed ones, can no longer act.
@@ -122,6 +127,7 @@ class Community:
     bond_fund: u256  # upheld bonds; pays overturn rewards only, never withdrawable
     reserved: u256
     cases: u256
+    policy_version: u256  # bumped by each amendment; `rules` is the current version
 
 
 @allow_storage
@@ -135,6 +141,7 @@ class Case:
     signature: str
     rule: u256
     action: str
+    policy_version: u256  # the policy in force when the action was taken: the one the ruling applies
     at: u256
     status: str
     appealed_at: u256
@@ -441,10 +448,27 @@ def _transfer_result(q: dict) -> str:
     raise gl.vm.UserError(f"{ERR_EXPECTED} that transaction did not create this payout")
 
 
+def _parse_rules(rules_json: str) -> list:
+    """A JSON list of rule texts, or of {"text", "max_action"} (default: ban)."""
+    try:
+        raw = json.loads(rules_json)
+        rules = [
+            {"text": str(r["text"] if isinstance(r, dict) else r).strip(), "max": (r.get("max_action") or "ban") if isinstance(r, dict) else "ban"}
+            for r in raw
+        ]
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise gl.vm.UserError(f"{ERR_EXPECTED} rules must be a JSON list")
+    if not (1 <= len(rules) <= MAX_RULES) or any(not (5 <= len(r["text"]) <= 300) for r in rules):
+        raise gl.vm.UserError(f"{ERR_EXPECTED} 1-20 rules of 5-300 characters")
+    if any(r["max"] not in ACTIONS for r in rules):
+        raise gl.vm.UserError(f"{ERR_EXPECTED} max_action must be hide, remove, mute or ban")
+    return rules
+
 class ModCourt(gl.contract.Contract):
     communities: DynArray[Community]
     cases: DynArray[Case]
     case_index: TreeMap[str, u256]  # "cid:k" -> case id
+    policies: TreeMap[str, str]  # "cid:version" -> rules JSON, every version ever in force
     moderators: TreeMap[str, u256]  # "cid:0xaddr" -> 1
     stats: TreeMap[str, u256]  # "cid:0xaddr:actions|appeals|overturned"
     payouts: DynArray[Payout]
@@ -462,18 +486,7 @@ class ModCourt(gl.contract.Contract):
     def create_community(self, name: str, rules_json: str, appeal_bond: int, reward: int) -> int:
         """`rules_json`: a JSON list of rule texts, or of {"text", "max_action"}
         to cap the strongest action a rule allows (default: ban)."""
-        try:
-            raw = json.loads(rules_json)
-            rules = [
-                {"text": str(r["text"] if isinstance(r, dict) else r).strip(), "max": (r.get("max_action") or "ban") if isinstance(r, dict) else "ban"}
-                for r in raw
-            ]
-        except (ValueError, TypeError, KeyError, AttributeError):
-            raise gl.vm.UserError(f"{ERR_EXPECTED} rules must be a JSON list")
-        if not (1 <= len(rules) <= MAX_RULES) or any(not (5 <= len(r["text"]) <= 300) for r in rules):
-            raise gl.vm.UserError(f"{ERR_EXPECTED} 1-20 rules of 5-300 characters")
-        if any(r["max"] not in ACTIONS for r in rules):
-            raise gl.vm.UserError(f"{ERR_EXPECTED} max_action must be hide, remove, mute or ban")
+        rules = _parse_rules(rules_json)
         if not (3 <= len(name.strip()) <= 80):
             raise gl.vm.UserError(f"{ERR_EXPECTED} name must be 3-80 characters")
         if appeal_bond <= 0 or reward <= 0:
@@ -492,11 +505,27 @@ class ModCourt(gl.contract.Contract):
                 bond_fund=u256(0),
                 reserved=u256(0),
                 cases=u256(0),
+                policy_version=u256(0),
             )
         )
+        self.policies[f"{cid}:0"] = json.dumps(rules)
         self.moderators[f"{cid}:{owner.as_hex.lower()}"] = u256(1)
         self.expected_balance = _add(self.expected_balance, gl.message.value)
         return cid
+
+    @gl.public.write
+    def amend_rules(self, community_id: int, rules_json: str) -> int:
+        """Publish a new policy version; returns it. Existing cases keep the
+        version they were recorded under."""
+        c = self._cm(community_id)
+        self._only(c.owner)
+        rules = json.dumps(_parse_rules(rules_json))
+        if rules == c.rules:
+            raise gl.vm.UserError(f"{ERR_EXPECTED} the policy is unchanged")
+        c.policy_version = _add(c.policy_version, 1)
+        c.rules = rules
+        self.policies[f"{community_id}:{int(c.policy_version)}"] = rules
+        return int(c.policy_version)
 
     @gl.public.write.payable
     def fund(self, community_id: int) -> None:
@@ -564,6 +593,7 @@ class ModCourt(gl.contract.Contract):
                 signature=signature.strip().lower(),
                 rule=u256(rule),
                 action=action,
+                policy_version=c.policy_version,
                 at=u256(_now()),
                 status=ACTIVE,
                 appealed_at=u256(0),
@@ -615,7 +645,7 @@ class ModCourt(gl.contract.Contract):
         params = {
             "url": content_url.strip(),
             "sha": k.content_sha256,
-            "rules": json.loads(c.rules),
+            "rules": json.loads(self.policies[f"{int(k.community_id)}:{int(k.policy_version)}"]),
             "rule": int(k.rule),
             "action": k.action,
             "statement": statement,
@@ -746,6 +776,7 @@ class ModCourt(gl.contract.Contract):
             "name": c.name,
             "rules": [r["text"] for r in rules],
             "max_actions": [r["max"] for r in rules],
+            "policy_version": int(c.policy_version),
             "appeal_bond": int(c.appeal_bond),
             "reward": int(c.reward),
             "pool": int(c.pool),
@@ -755,6 +786,15 @@ class ModCourt(gl.contract.Contract):
             "free": int(c.pool) + int(c.bond_fund) - int(c.reserved),
             "case_count": int(c.cases),
         }
+
+    @gl.public.view
+    def get_policy(self, community_id: int, version: int) -> dict:
+        """A policy version as it was in force (rule n is rules[n - 1])."""
+        c = self._cm(community_id)
+        if not (0 <= version <= int(c.policy_version)):
+            raise gl.vm.UserError(f"{ERR_EXPECTED} no such policy version")
+        rules = json.loads(self.policies[f"{community_id}:{version}"])
+        return {"version": version, "rules": [r["text"] for r in rules], "max_actions": [r["max"] for r in rules]}
 
     @gl.public.view
     def get_community_count(self) -> int:
@@ -785,6 +825,7 @@ class ModCourt(gl.contract.Contract):
             "signature": k.signature,
             "rule": int(k.rule),
             "action": k.action,
+            "policy_version": int(k.policy_version),
             "at": int(k.at),
             "appeal_until": int(k.at) + APPEAL_WINDOW,
             "status": k.status,

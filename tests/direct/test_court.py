@@ -499,3 +499,47 @@ def test_one_paying_transaction_settles_one_payout_and_one_payment_per_second(ca
     assert case.settle_payout(0, tx, fin) == "DELIVERED"
     with direct_vm.expect_revert("already settled a payout"):
         case.settle_payout(1, tx, fin)
+
+def test_amendments_are_versioned_and_cases_keep_their_policy(case, direct_vm, direct_alice, direct_bob, direct_charlie):
+    import gltest.direct.wasi_mock as wm
+
+    new = [{"text": "Posts must be in English", "max_action": "hide"}]
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("not authorised"):
+        case.amend_rules(0, json.dumps(new))
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("1-20 rules"):
+        case.amend_rules(0, json.dumps([]))
+    with direct_vm.expect_revert("unchanged"):
+        case.amend_rules(0, json.dumps(RULES))
+    assert case.amend_rules(0, json.dumps(new)) == 1
+    c = case.get_community(0)
+    assert (c["policy_version"], c["rules"], c["max_actions"]) == (1, ["Posts must be in English"], ["hide"])
+    assert case.get_policy(0, 0)["rules"] == RULES and case.get_policy(0, 1)["rules"] == ["Posts must be in English"]
+    with direct_vm.expect_revert("no such policy version"):
+        case.get_policy(0, 2)
+
+    # New actions follow the new policy: rule 3 is gone and rule 1 caps at hide.
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("no such rule"):
+        act(direct_vm, case, content="another post", rule=3)
+    with direct_vm.expect_revert("allows at most hide"):
+        act(direct_vm, case, content="another post", rule=1, action="remove")
+    act(direct_vm, case, content="another post", rule=1, action="hide")
+    assert [case.get_case(i)["policy_version"] for i in (0, 1)] == [0, 1]
+
+    # Case 0 was recorded under version 0: its ruling quotes that policy, not the amendment.
+    appeal(direct_vm, case, direct_charlie)
+    seen, orig = {}, wm._handle_llm_request
+
+    def spy(vm, data):
+        seen["prompt"] = data["prompt"]
+        return orig(vm, data)
+
+    wm._handle_llm_request = spy
+    try:
+        decide(direct_vm, case, direct_charlie, violated=False)
+    finally:
+        wm._handle_llm_request = orig
+    assert "3. " + RULES[2] in seen["prompt"] and "English" not in seen["prompt"]
+    assert case.get_case(0)["status"] == "OVERTURNED"
